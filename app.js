@@ -30,11 +30,11 @@ const PREFS_KEY = "bizEnglishPrefs_v1";
 function loadLocalState() {
   try {
     return Object.assign(
-      { completed: {}, streak: { count: 0, lastDate: null } },
+      { completed: {}, streak: { count: 0, lastDate: null }, wrongItems: {} },
       JSON.parse(localStorage.getItem(LOCAL_KEY))
     );
   } catch (e) {
-    return { completed: {}, streak: { count: 0, lastDate: null } };
+    return { completed: {}, streak: { count: 0, lastDate: null }, wrongItems: {} };
   }
 }
 function saveLocalOnly() {
@@ -67,6 +67,7 @@ function startFirestoreSync(uid) {
       const remote = snap.data();
       state.completed = remote.completed || {};
       state.streak = remote.streak || { count: 0, lastDate: null };
+      state.wrongItems = remote.wrongItems || {};
       saveLocalOnly();
       refreshCurrentView();
     } else {
@@ -80,7 +81,7 @@ function stopFirestoreSync() {
 function pushStateToFirestore() {
   if (!currentUser || !db) return;
   setDoc(doc(db, "users", currentUser.uid),
-    { completed: state.completed, streak: state.streak },
+    { completed: state.completed, streak: state.streak, wrongItems: state.wrongItems },
     { merge: true }
   ).catch((e) => console.error("push error", e));
 }
@@ -114,6 +115,25 @@ function ddayToSept30() {
 function recommendedDay() {
   for (let i = 1; i <= 30; i++) if (!state.completed[i]) return i;
   return 30;
+}
+
+// ---------- 오답 기록/복습 ----------
+function recordAnswer(id, day, type, qIndex, correct) {
+  if (correct) {
+    if (state.wrongItems[id]) { delete state.wrongItems[id]; saveState(); }
+  } else {
+    const prev = state.wrongItems[id];
+    state.wrongItems[id] = { day, type, qIndex, missCount: (prev ? prev.missCount : 0) + 1, lastWrongAt: new Date().toISOString() };
+    saveState();
+  }
+}
+function getQuestionByRef(ref) {
+  const d = getDayData(ref.day);
+  if (!d) return null;
+  if (ref.type === "vocab") return d.vocabQuiz[ref.qIndex];
+  if (ref.type === "listening") return d.listeningQuiz[ref.qIndex];
+  if (ref.type === "reading") return d.reading.questions[ref.qIndex];
+  return null;
 }
 
 // ---------- TTS ----------
@@ -259,6 +279,14 @@ function renderHome() {
   document.getElementById("stat-dday").textContent = ddayToSept30();
   renderWeekGrid();
   updateStreakBadge();
+  const wrongCount = Object.keys(state.wrongItems || {}).length;
+  const reviewCard = document.getElementById("review-card");
+  if (wrongCount > 0) {
+    reviewCard.style.display = "";
+    document.getElementById("review-count-text").textContent = `틀렸던 문제 ${wrongCount}개가 쌓여있어요`;
+  } else {
+    reviewCard.style.display = "none";
+  }
 }
 function renderWeekGrid() {
   const wrap = document.getElementById("home-week-grid");
@@ -332,6 +360,8 @@ function renderSettings() {
 // ---------- 레슨 ----------
 const STEPS = ["phrases", "listening", "reading", "writing", "quiz"];
 let lessonState = null;
+let reviewState = null;
+let inReview = false;
 const content = () => document.getElementById("lesson-content");
 
 function startLesson(day) {
@@ -372,7 +402,7 @@ function renderInlineQA(prefix, qi, q) {
   html += `</div>`;
   return html;
 }
-function wireInlineQA(root, prefix, questions) {
+function wireInlineQA(root, prefix, questions, day, type) {
   root.querySelectorAll(`[data-qkey^="${prefix}-"] .qa-option`).forEach((btn) => {
     btn.onclick = () => {
       const card = btn.closest(".qa-card");
@@ -380,12 +410,14 @@ function wireInlineQA(root, prefix, questions) {
       card.dataset.answered = "1";
       const qi = +btn.dataset.qi, oi = +btn.dataset.oi;
       const q = questions[qi];
+      const correct = oi === q.answer;
       card.querySelectorAll(".qa-option").forEach((b) => (b.disabled = true));
-      if (oi === q.answer) btn.classList.add("correct");
+      if (correct) btn.classList.add("correct");
       else {
         btn.classList.add("wrong");
         card.querySelector(`.qa-option[data-oi="${q.answer}"]`).classList.add("correct");
       }
+      if (day && type) recordAnswer(`${type[0]}${day}-${qi}`, day, type, qi, correct);
     };
   });
 }
@@ -441,7 +473,7 @@ function renderListeningStep(d) {
   content().querySelectorAll(".rec-line").forEach((btn) => (btn.onclick = () => toggleRecord(btn)));
   document.getElementById("play-all-btn").onclick = () => playSequence(d.dialogue.lines);
   document.getElementById("stop-play-btn").onclick = () => window.speechSynthesis.cancel();
-  wireInlineQA(content(), "lq", d.listeningQuiz);
+  wireInlineQA(content(), "lq", d.listeningQuiz, d.day, "listening");
   wireNav();
 }
 
@@ -453,7 +485,7 @@ function renderReadingStep(d) {
   html += navRow(true, "다음: 라이팅 →");
   content().innerHTML = html;
   document.getElementById("read-listen-btn").onclick = () => speak(d.reading.passage);
-  wireInlineQA(content(), "rq", d.reading.questions);
+  wireInlineQA(content(), "rq", d.reading.questions, d.day, "reading");
   wireNav();
 }
 
@@ -491,6 +523,7 @@ function renderQuizStep(d) {
         btn.classList.add("wrong");
         content().querySelector(`.quiz-option[data-i="${q.answer}"]`).classList.add("correct");
       }
+      recordAnswer(`v${d.day}-${lessonState.quizIndex}`, d.day, "vocab", lessonState.quizIndex, correct);
       setTimeout(() => {
         if (lessonState.quizIndex + 1 < d.vocabQuiz.length) { lessonState.quizIndex++; renderQuizStep(d); }
         else finishLesson(d);
@@ -526,6 +559,61 @@ function renderDoneStep() {
   if (nextBtn) nextBtn.onclick = () => startLesson(lessonState.day + 1);
 }
 
+function startReview() {
+  const ids = Object.keys(state.wrongItems);
+  if (!ids.length) { alert("복습할 틀린 문제가 없어요!"); return; }
+  reviewState = { ids, index: 0, correctCount: 0 };
+  inReview = true;
+  showView("lesson");
+  renderReviewStep();
+}
+const TYPE_LABEL = { vocab: "어휘", listening: "리스닝", reading: "리딩" };
+function renderReviewStep() {
+  document.getElementById("lesson-steps").innerHTML =
+    `<div style="flex:1;text-align:center;font-size:12px;color:var(--text-soft);">🔁 오답 복습 ${reviewState.index + 1} / ${reviewState.ids.length}</div>`;
+  const id = reviewState.ids[reviewState.index];
+  const ref = state.wrongItems[id];
+  const q = ref ? getQuestionByRef(ref) : null;
+  const d = ref ? getDayData(ref.day) : null;
+  if (!ref || !q || !d) { nextReviewItem(); return; }
+  let html = `<div class="step-title">🔁 오답 복습</div><div class="step-sub">Day ${ref.day} · ${esc(d.titleKo)} · ${TYPE_LABEL[ref.type]}</div>`;
+  html += `<div class="quiz-question"><div class="qtext">${esc(q.qKo)}</div></div>`;
+  html += `<div class="quiz-options">` + q.options.map((opt, i) => `<button class="quiz-option" data-i="${i}">${esc(opt)}</button>`).join("") + `</div>`;
+  content().innerHTML = html;
+  content().querySelectorAll(".quiz-option").forEach((btn) => {
+    btn.onclick = () => {
+      const i = +btn.dataset.i;
+      const correct = i === q.answer;
+      content().querySelectorAll(".quiz-option").forEach((b) => (b.disabled = true));
+      if (correct) { btn.classList.add("correct"); reviewState.correctCount++; }
+      else {
+        btn.classList.add("wrong");
+        content().querySelector(`.quiz-option[data-i="${q.answer}"]`).classList.add("correct");
+      }
+      recordAnswer(id, ref.day, ref.type, ref.qIndex, correct);
+      setTimeout(nextReviewItem, 900);
+    };
+  });
+}
+function nextReviewItem() {
+  reviewState.index++;
+  if (reviewState.index < reviewState.ids.length) renderReviewStep();
+  else finishReview();
+}
+function finishReview() {
+  inReview = false;
+  const remaining = Object.keys(state.wrongItems).length;
+  document.getElementById("lesson-steps").innerHTML = "";
+  let html = `<div class="done-wrap">
+    <div class="emoji">🔁</div>
+    <div class="big-num">${reviewState.correctCount} / ${reviewState.ids.length}</div>
+    <div class="sub">복습 완료! ${remaining > 0 ? remaining + "개는 아직 복습이 더 필요해요." : "모두 정답이에요, 오답노트 클리어! 🎉"}</div>
+    <button class="btn btn-primary btn-block" id="review-done-home-btn">홈으로</button>
+  </div>`;
+  content().innerHTML = html;
+  document.getElementById("review-done-home-btn").onclick = () => showView("home");
+}
+
 // ---------- 로그인 / 앱 셸 전환 ----------
 function showAppShell() {
   document.getElementById("view-login").classList.remove("active");
@@ -554,9 +642,11 @@ document.getElementById("skip-login-btn").onclick = () => showAppShell();
 document.getElementById("settings-login-btn").onclick = doGoogleLogin;
 document.getElementById("settings-logout-btn").onclick = () => { if (auth) signOut(auth); };
 document.getElementById("lesson-back").onclick = () => {
+  if (inReview) { inReview = false; showView("home"); return; }
   if (confirm("학습을 종료하고 홈으로 돌아갈까요? (현재 단계까지는 저장되지 않아요)")) showView("home");
 };
 document.getElementById("home-view-all-btn").onclick = () => showView("days");
+document.getElementById("review-start-btn").onclick = () => startReview();
 document.querySelectorAll("#bottom-nav button").forEach((btn) => (btn.onclick = () => showView(btn.dataset.view)));
 
 document.getElementById("voice-select").onchange = (e) => { prefs.voiceURI = e.target.value; savePrefs(); };
@@ -570,7 +660,7 @@ document.getElementById("rate-range").oninput = (e) => {
 };
 document.getElementById("reset-progress-btn").onclick = () => {
   if (confirm("정말로 전체 학습 기록을 초기화할까요? 되돌릴 수 없어요.")) {
-    state = { completed: {}, streak: { count: 0, lastDate: null } };
+    state = { completed: {}, streak: { count: 0, lastDate: null }, wrongItems: {} };
     saveState();
     renderSettings();
     renderHome();
