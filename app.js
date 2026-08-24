@@ -48,9 +48,9 @@ let state = loadLocalState();
 
 function loadPrefs() {
   try {
-    return Object.assign({ voiceURI: null, rate: 0.9 }, JSON.parse(localStorage.getItem(PREFS_KEY)));
+    return Object.assign({ voiceURI: null, voiceBURI: null, rate: 0.9 }, JSON.parse(localStorage.getItem(PREFS_KEY)));
   } catch (e) {
-    return { voiceURI: null, rate: 0.9 };
+    return { voiceURI: null, voiceBURI: null, rate: 0.9 };
   }
 }
 function savePrefs() {
@@ -141,6 +141,26 @@ function bestVoiceURI() {
   if (!voicesCache.length) return null;
   return [...voicesCache].sort((a, b) => voiceScore(b) - voiceScore(a))[0].voiceURI;
 }
+const FEMALE_NAME_HINTS = /samantha|ava|zoe|karen|moira|tessa|allison|victoria|susan|kate|nicky|kathy|sandy|shelley|flo|grandma|princess|tina|alice|anna|alva|monica|luciana|melina/i;
+const MALE_NAME_HINTS = /daniel|alex$|fred|ralph|aaron|tom|nathan|evan|rishi|arthur|oliver|gordon|junior|reed|rocko|grandpa|albert|eddy/i;
+function voiceGender(v) {
+  if (FEMALE_NAME_HINTS.test(v.name)) return "f";
+  if (MALE_NAME_HINTS.test(v.name)) return "m";
+  return "u";
+}
+function bestVoiceBURI(primaryURI) {
+  if (voicesCache.length < 2) return null;
+  const primary = voicesCache.find((v) => v.voiceURI === primaryURI);
+  const primaryGender = primary ? voiceGender(primary) : "u";
+  const others = voicesCache.filter((v) => v.voiceURI !== primaryURI);
+  const oppositeGender = others.filter((v) => primaryGender !== "u" && voiceGender(v) !== "u" && voiceGender(v) !== primaryGender);
+  const pool = oppositeGender.length ? oppositeGender : others;
+  return [...pool].sort((a, b) => voiceScore(b) - voiceScore(a))[0].voiceURI;
+}
+function speakerVoiceURI(speaker) {
+  if (speaker === "A") return prefs.voiceURI || bestVoiceURI();
+  return prefs.voiceBURI || bestVoiceBURI(prefs.voiceURI || bestVoiceURI()) || prefs.voiceURI || bestVoiceURI();
+}
 function speak(text, opts = {}) {
   if (!window.speechSynthesis) {
     alert("이 브라우저는 음성 재생을 지원하지 않아요.");
@@ -163,7 +183,7 @@ function speak(text, opts = {}) {
 async function playSequence(lines) {
   window.speechSynthesis.cancel();
   for (const line of lines) {
-    await speak(line.en, { pitch: line.speaker === "A" ? 1 : 0.85 });
+    await speak(line.en, { voiceURI: speakerVoiceURI(line.speaker), pitch: line.speaker === "A" ? 1 : 0.92 });
     await sleep(250);
   }
 }
@@ -277,13 +297,19 @@ function renderDays() {
 // ---------- 설정 ----------
 function populateVoiceSelect() {
   const sel = document.getElementById("voice-select");
+  const selB = document.getElementById("voice-select-b");
   if (!voicesCache.length) {
     sel.innerHTML = `<option>사용 가능한 영어 음성이 없어요</option>`;
+    selB.innerHTML = `<option>사용 가능한 영어 음성이 없어요</option>`;
     return;
   }
-  sel.innerHTML = voicesCache.map((v) => `<option value="${esc(v.voiceURI)}">${esc(v.name)} (${esc(v.lang)})</option>`).join("");
+  const optionsHtml = voicesCache.map((v) => `<option value="${esc(v.voiceURI)}">${esc(v.name)} (${esc(v.lang)})</option>`).join("");
+  sel.innerHTML = optionsHtml;
+  selB.innerHTML = optionsHtml;
   if (!prefs.voiceURI) prefs.voiceURI = bestVoiceURI();
+  if (!prefs.voiceBURI) prefs.voiceBURI = bestVoiceBURI(prefs.voiceURI);
   sel.value = prefs.voiceURI || "";
+  selB.value = prefs.voiceBURI || prefs.voiceURI || "";
 }
 function renderSettings() {
   const info = document.getElementById("settings-account-info");
@@ -409,7 +435,7 @@ function renderListeningStep(d) {
   content().querySelectorAll(".speak-line").forEach((btn) => {
     btn.onclick = () => {
       const line = d.dialogue.lines[+btn.dataset.i];
-      speak(line.en, { pitch: line.speaker === "A" ? 1 : 0.85 });
+      speak(line.en, { voiceURI: speakerVoiceURI(line.speaker), pitch: line.speaker === "A" ? 1 : 0.92 });
     };
   });
   content().querySelectorAll(".rec-line").forEach((btn) => (btn.onclick = () => toggleRecord(btn)));
@@ -534,7 +560,9 @@ document.getElementById("home-view-all-btn").onclick = () => showView("days");
 document.querySelectorAll("#bottom-nav button").forEach((btn) => (btn.onclick = () => showView(btn.dataset.view)));
 
 document.getElementById("voice-select").onchange = (e) => { prefs.voiceURI = e.target.value; savePrefs(); };
-document.getElementById("voice-test-btn").onclick = () => speak("Hi, I'd like to walk you through this quarter's results.");
+document.getElementById("voice-select-b").onchange = (e) => { prefs.voiceBURI = e.target.value; savePrefs(); };
+document.getElementById("voice-test-btn").onclick = () => speak("Hi, I'd like to walk you through this quarter's results.", { voiceURI: prefs.voiceURI });
+document.getElementById("voice-test-btn-b").onclick = () => speak("Sure, that sounds good to me.", { voiceURI: prefs.voiceBURI, pitch: 0.92 });
 document.getElementById("rate-range").oninput = (e) => {
   prefs.rate = +e.target.value;
   document.getElementById("rate-value").textContent = prefs.rate;

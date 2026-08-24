@@ -83,11 +83,16 @@
 
         <div class="section-title">음성 설정</div>
         <div class="card">
-          <label class="field-label">영어 음성 선택</label>
+          <label class="field-label">대화 A(1번 화자) 음성</label>
           <select id="voice-select"></select>
-          <button class="btn btn-outline" id="voice-test-btn" style="margin-top:10px;">🔊 음성 테스트</button>
+          <button class="btn btn-outline" id="voice-test-btn" style="margin-top:10px;">🔊 A 음성 테스트</button>
 
-          <label class="field-label" style="margin-top:16px;">말하기 속도: <span id="rate-value">0.9</span></label>
+          <label class="field-label" style="margin-top:18px;">대화 B(2번 화자) 음성</label>
+          <select id="voice-select-b"></select>
+          <button class="btn btn-outline" id="voice-test-btn-b" style="margin-top:10px;">🔊 B 음성 테스트</button>
+          <div style="font-size:11.5px;color:var(--text-soft);margin-top:8px;">기기에 음성이 여러 개 있으면 A/B를 다른 목소리로 자동 배정해요. 헷갈리면 여기서 직접 다르게 골라주세요.</div>
+
+          <label class="field-label" style="margin-top:18px;">말하기 속도: <span id="rate-value">0.9</span></label>
           <input type="range" id="rate-range" min="0.6" max="1.2" step="0.05" value="0.9" style="width:100%;" />
         </div>
 
