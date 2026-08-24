@@ -209,32 +209,42 @@ async function playSequence(lines) {
 }
 
 // ---------- 녹음(쉐도잉) ----------
-let activeRecorder = null;
-async function toggleRecord(btnEl) {
-  if (activeRecorder && activeRecorder.state === "recording") {
-    activeRecorder.stop();
-    return;
-  }
+function recordFor(ms) {
+  return new Promise((resolve, reject) => {
+    navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+      const chunks = [];
+      const rec = new MediaRecorder(stream);
+      rec.ondataavailable = (e) => chunks.push(e.data);
+      rec.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(chunks, { type: "audio/webm" });
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        audio.onended = resolve;
+        audio.onerror = resolve;
+        audio.play();
+      };
+      rec.start();
+      setTimeout(() => { if (rec.state === "recording") rec.stop(); }, ms);
+    }).catch(reject);
+  });
+}
+async function listenAndRepeat(line, btnEl) {
+  if (btnEl.disabled) return;
+  btnEl.disabled = true;
+  btnEl.textContent = "🔊";
+  await speak(line.en, { voiceURI: speakerVoiceURI(line.speaker), pitch: line.speaker === "A" ? 1 : 0.92 });
+  await sleep(400);
+  btnEl.textContent = "🎙";
+  btnEl.classList.add("rec", "recording");
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const chunks = [];
-    activeRecorder = new MediaRecorder(stream);
-    activeRecorder.ondataavailable = (e) => chunks.push(e.data);
-    activeRecorder.onstop = () => {
-      stream.getTracks().forEach((t) => t.stop());
-      btnEl.classList.remove("recording");
-      const blob = new Blob(chunks, { type: "audio/webm" });
-      const url = URL.createObjectURL(blob);
-      new Audio(url).play();
-    };
-    activeRecorder.start();
-    btnEl.classList.add("recording");
-    setTimeout(() => {
-      if (activeRecorder && activeRecorder.state === "recording") activeRecorder.stop();
-    }, 6000);
+    await recordFor(4000);
   } catch (e) {
     alert("마이크 사용 권한이 필요해요. 브라우저 설정에서 마이크 접근을 허용해주세요.");
   }
+  btnEl.classList.remove("rec", "recording");
+  btnEl.textContent = "🎧";
+  btnEl.disabled = false;
 }
 
 // ---------- 화면 전환 ----------
@@ -449,14 +459,14 @@ function renderPhrasesStep(d) {
 function renderListeningStep(d) {
   let html = `<div class="step-title">🎧 리스닝 &amp; 쉐도잉</div>`;
   html += `<div class="dialogue-context">${esc(d.dialogue.situationKo)}</div>`;
-  html += `<div class="play-all-row"><button class="btn btn-primary" id="play-all-btn">▶ 전체 재생</button><button class="btn btn-outline" id="stop-play-btn">⏹ 정지</button></div>`;
+  html += `<div class="step-sub" style="margin-bottom:12px;">🎧 버튼을 누르면 재생 → 따라 말하기 녹음 → 내 목소리 재생까지 자동으로 이어져요. 어색했으면 같은 버튼을 다시 누르면 반복돼요.</div>`;
+  html += `<div class="play-all-row"><button class="btn btn-primary" id="play-all-btn">▶ 전체 재생 (듣기만)</button><button class="btn btn-outline" id="stop-play-btn">⏹ 정지</button></div>`;
   d.dialogue.lines.forEach((line, i) => {
     html += `<div class="dialogue-line">
       <div class="spk ${line.speaker}">${line.speaker}</div>
       <div class="en">${esc(line.en)}</div>
       <div class="btns">
-        <button class="icon-btn speak-line" data-i="${i}" title="듣기">🔊</button>
-        <button class="icon-btn rec rec-line" data-i="${i}" title="따라 말하고 녹음 듣기">🎙</button>
+        <button class="icon-btn listen-repeat-btn" data-i="${i}" title="듣고 따라하기">🎧</button>
       </div>
     </div>`;
   });
@@ -464,13 +474,9 @@ function renderListeningStep(d) {
   d.listeningQuiz.forEach((q, qi) => (html += renderInlineQA("lq", qi, q)));
   html += navRow(true, "다음: 리딩 →");
   content().innerHTML = html;
-  content().querySelectorAll(".speak-line").forEach((btn) => {
-    btn.onclick = () => {
-      const line = d.dialogue.lines[+btn.dataset.i];
-      speak(line.en, { voiceURI: speakerVoiceURI(line.speaker), pitch: line.speaker === "A" ? 1 : 0.92 });
-    };
+  content().querySelectorAll(".listen-repeat-btn").forEach((btn) => {
+    btn.onclick = () => listenAndRepeat(d.dialogue.lines[+btn.dataset.i], btn);
   });
-  content().querySelectorAll(".rec-line").forEach((btn) => (btn.onclick = () => toggleRecord(btn)));
   document.getElementById("play-all-btn").onclick = () => playSequence(d.dialogue.lines);
   document.getElementById("stop-play-btn").onclick = () => window.speechSynthesis.cancel();
   wireInlineQA(content(), "lq", d.listeningQuiz, d.day, "listening");
